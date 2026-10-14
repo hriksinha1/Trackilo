@@ -1,0 +1,8 @@
+{
+  "name": "Bookzee",
+  "description": "A calm, intelligent operations workspace for hotels, resorts, and boutique homestays to manage stays, guests, and payments.",
+  "requestFramePermissions": [],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}
