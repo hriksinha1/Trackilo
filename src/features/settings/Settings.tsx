@@ -322,7 +322,7 @@ export default function Settings() {
           </div>
 
           <p className="text-xs text-[#8A3B22] leading-relaxed">
-            Resetting the demo data will restore the initial Bookzee portfolio (The Heritage Courtyard,
+            Resetting the demo data will restore the initial Bookzee portfolio (The Rojal Homestay,
             Valley View Resort, Whispering Pines Villa, etc.) with pre-seeded guests and reservations.
           </p>
 

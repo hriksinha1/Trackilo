@@ -275,10 +275,10 @@ export default function NewBooking() {
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 pt-2">
             <button
               onClick={() => setShowDocModal(true)}
-              className="btn btn-primary py-3 text-xs font-semibold flex items-center justify-center gap-2"
+              className="btn btn-primary py-3 text-xs font-semibold flex items-center justify-center gap-2 cursor-pointer"
             >
               <FileText size={16} />
-              <span>Preview & Share Advance Receipt</span>
+              <span>Share Advance Bill (PDF Format)</span>
             </button>
 
             <button

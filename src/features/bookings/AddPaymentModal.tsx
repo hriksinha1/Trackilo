@@ -17,10 +17,19 @@ import {
   Mail,
   Copy,
   Check,
-  ArrowRight
+  ArrowRight,
+  Eye,
+  Smartphone
 } from 'lucide-react';
 import { useToast } from '../../context/ToastContext';
 import { Payment, Booking, BusinessSettings } from '../../lib/repository/types';
+import {
+  sharePdfNative,
+  sharePdfViaWhatsApp,
+  sharePdfViaEmail,
+  openPdfPreview,
+  canSharePdfFile
+} from '../../lib/services/pdfShare';
 
 interface AddPaymentModalProps {
   booking: Booking;
@@ -55,6 +64,7 @@ export default function AddPaymentModal({
   const [previouslyPaid, setPreviouslyPaid] = useState<number>(0);
   const [downloading, setDownloading] = useState(false);
   const [copied, setCopied] = useState(false);
+  const [selectedDoc, setSelectedDoc] = useState<'receipt' | 'invoice'>('receipt');
 
   useEffect(() => {
     repository.getSettings().then(setSettings);
@@ -154,10 +164,9 @@ export default function AddPaymentModal({
     }
   }
 
-  async function handleDownloadReceipt() {
-    if (!successData || !settings) return;
-    setDownloading(true);
-    try {
+  async function getTargetPdf(docType: 'receipt' | 'invoice') {
+    if (!successData || !settings) return null;
+    if (docType === 'receipt') {
       const doc = await generatePaymentReceiptPDF(
         booking,
         successData.payment,
@@ -167,20 +176,16 @@ export default function AddPaymentModal({
         successData.previouslyPaid,
         successData.newBalance
       );
-      doc.save(`${successData.payment.payment_no}.pdf`);
-      toast.success('Receipt Saved', `${successData.payment.payment_no}.pdf downloaded.`);
-    } catch (err) {
-      console.error(err);
-      toast.error('Failed to generate receipt PDF');
-    } finally {
-      setDownloading(false);
-    }
-  }
-
-  async function handleDownloadInvoice() {
-    if (!successData || !settings) return;
-    setDownloading(true);
-    try {
+      const fileName = `${successData.payment.payment_no}.pdf`;
+      const title = successData.newBalance <= 0 ? 'Final Settlement Receipt' : 'Payment Receipt';
+      return {
+        doc,
+        fileName,
+        title,
+        amount: successData.amount,
+        balanceDue: successData.newBalance
+      };
+    } else {
       const doc = await generateBookingInvoicePDF(
         booking,
         [],
@@ -191,60 +196,123 @@ export default function AddPaymentModal({
         successData.newBalance
       );
       const invNo = `${settings.invoicePrefix || 'INV-'}${booking.booking_no.replace(/^BK-/, '')}`;
-      doc.save(`${invNo}.pdf`);
-      toast.success('Invoice Saved', `${invNo}.pdf downloaded.`);
-    } catch (err) {
+      const fileName = `${invNo}.pdf`;
+      const title = 'Stay Folio Bill / Invoice';
+      return {
+        doc,
+        fileName,
+        title,
+        amount: booking.grand_total,
+        balanceDue: successData.newBalance
+      };
+    }
+  }
+
+  async function handleSharePdfNative(docType: 'receipt' | 'invoice') {
+    setDownloading(true);
+    try {
+      const target = await getTargetPdf(docType);
+      if (!target) return;
+      const res = await sharePdfNative({
+        doc: target.doc,
+        fileName: target.fileName,
+        title: target.title,
+        guestName: booking.customer?.name,
+        guestPhone: booking.customer?.phone,
+        guestEmail: booking.customer?.email,
+        propertyName: booking.property?.name,
+        bookingNo: booking.booking_no,
+        amount: target.amount,
+        balanceDue: target.balanceDue
+      });
+      if (res.success) {
+        toast.success(res.method === 'native' ? 'Shared Successfully' : 'PDF Saved', res.message);
+      }
+    } catch (err: any) {
       console.error(err);
-      toast.error('Failed to generate invoice PDF');
+      toast.error('Share Failed', err.message || 'Could not share PDF bill.');
     } finally {
       setDownloading(false);
     }
   }
 
-  function handleWhatsAppShare() {
-    if (!successData) return;
-    const phone = (booking.customer?.phone || '').replace(/[^0-9]/g, '');
-    const docTitle = successData.newBalance <= 0 ? 'Final Settlement Receipt' : 'Payment Receipt';
-    const msg = `Namaste ${booking.customer?.name || 'Guest'}! Here is your ${docTitle} (${successData.payment.payment_no}) for your stay at ${booking.property?.name || 'our property'}.\n\n` +
-      `Booking: ${booking.booking_no}\n` +
-      `Amount Paid: ${fmtINR(successData.amount)} (${successData.payment.method})\n` +
-      `Remaining Due: ${fmtINR(successData.newBalance)}\n\n` +
-      `Thank you for staying with us!`;
-
-    const url = phone
-      ? `https://wa.me/${phone}?text=${encodeURIComponent(msg)}`
-      : `https://wa.me/?text=${encodeURIComponent(msg)}`;
-
-    window.open(url, '_blank', 'noopener,noreferrer');
-    toast.success('WhatsApp Prepared', 'Pre-filled message ready to send with your receipt.');
+  async function handleSharePdfWhatsApp(docType: 'receipt' | 'invoice') {
+    setDownloading(true);
+    try {
+      const target = await getTargetPdf(docType);
+      if (!target) return;
+      const res = await sharePdfViaWhatsApp({
+        doc: target.doc,
+        fileName: target.fileName,
+        title: target.title,
+        guestName: booking.customer?.name,
+        guestPhone: booking.customer?.phone,
+        propertyName: booking.property?.name,
+        bookingNo: booking.booking_no,
+        amount: target.amount,
+        balanceDue: target.balanceDue
+      });
+      toast.success('PDF Bill Ready', res.message);
+    } catch (err: any) {
+      console.error(err);
+      toast.error('WhatsApp Prep Failed', 'Could not prepare PDF for WhatsApp.');
+    } finally {
+      setDownloading(false);
+    }
   }
 
-  function handleEmailShare() {
-    if (!successData) return;
-    const email = booking.customer?.email || '';
-    const subject = `Payment Receipt ${successData.payment.payment_no} - ${booking.property?.name || 'Stay'}`;
-    const body = `Dear ${booking.customer?.name || 'Valued Guest'},\n\n` +
-      `We have recorded your payment of ${fmtINR(successData.amount)} via ${successData.payment.method}.\n\n` +
-      `Receipt Number: ${successData.payment.payment_no}\n` +
-      `Booking Reference: ${booking.booking_no}\n` +
-      `Remaining Balance: ${fmtINR(successData.newBalance)}\n\n` +
-      `Thank you,\n${booking.property?.name || 'Hospitality Front Desk'}`;
-
-    window.location.href = `mailto:${encodeURIComponent(email)}?subject=${encodeURIComponent(subject)}&body=${encodeURIComponent(body)}`;
-    toast.success('Email Client Opened', 'Pre-populated email draft opened.');
+  async function handleSharePdfEmail(docType: 'receipt' | 'invoice') {
+    setDownloading(true);
+    try {
+      const target = await getTargetPdf(docType);
+      if (!target) return;
+      const res = await sharePdfViaEmail({
+        doc: target.doc,
+        fileName: target.fileName,
+        title: target.title,
+        guestName: booking.customer?.name,
+        guestEmail: booking.customer?.email,
+        propertyName: booking.property?.name,
+        bookingNo: booking.booking_no,
+        amount: target.amount,
+        balanceDue: target.balanceDue
+      });
+      toast.success('Email Draft Opened', res.message);
+    } catch (err: any) {
+      console.error(err);
+      toast.error('Email Prep Failed', 'Could not prepare PDF for email.');
+    } finally {
+      setDownloading(false);
+    }
   }
 
-  function handleCopyDetails() {
-    if (!successData) return;
-    const text = `Receipt: ${successData.payment.payment_no}\n` +
-      `Guest: ${booking.customer?.name}\n` +
-      `Amount: ${fmtINR(successData.amount)}\n` +
-      `Balance: ${fmtINR(successData.newBalance)}\n` +
-      `Ref: ${booking.booking_no}`;
-    navigator.clipboard.writeText(text);
-    setCopied(true);
-    toast.success('Details Copied', 'Receipt details copied to clipboard.');
-    setTimeout(() => setCopied(false), 2000);
+  async function handleDownloadPdf(docType: 'receipt' | 'invoice') {
+    setDownloading(true);
+    try {
+      const target = await getTargetPdf(docType);
+      if (!target) return;
+      target.doc.save(target.fileName);
+      toast.success('PDF Saved', `${target.fileName} downloaded to your device.`);
+    } catch (err) {
+      console.error(err);
+      toast.error('Download Failed', 'Could not generate PDF file.');
+    } finally {
+      setDownloading(false);
+    }
+  }
+
+  async function handlePreviewPdf(docType: 'receipt' | 'invoice') {
+    setDownloading(true);
+    try {
+      const target = await getTargetPdf(docType);
+      if (!target) return;
+      openPdfPreview(target.doc);
+    } catch (err) {
+      console.error(err);
+      toast.error('Preview Failed', 'Could not open PDF in browser.');
+    } finally {
+      setDownloading(false);
+    }
   }
 
   // --- PERSISTENT POST-PAYMENT SUCCESS VIEW ---
@@ -323,71 +391,107 @@ export default function AddPaymentModal({
               </div>
             </div>
 
-            {/* Document Actions Grid */}
-            <div className="space-y-2">
-              <div className="text-[11px] font-bold uppercase tracking-wider text-[#5C6E6B]">
-                Immediate Document Actions
+            {/* PDF Format Bill Sharing Suite */}
+            <div className="space-y-3">
+              <div className="flex items-center justify-between">
+                <span className="text-[11px] font-bold uppercase tracking-wider text-[#5C6E6B]">
+                  Share Bill in PDF Format
+                </span>
+                <span className="text-[10px] font-semibold px-2 py-0.5 rounded-full bg-[#E8F3F1] text-[#0D5C56] border border-[#BDDFC9]">
+                  PDF Format (Not Text)
+                </span>
               </div>
 
-              <div className="grid grid-cols-2 gap-2.5">
+              {/* Document Selector Toggle */}
+              <div className="grid grid-cols-2 gap-1.5 p-1 bg-[#F3F0EA] rounded-xl border border-[#D8D2C5]">
                 <button
                   type="button"
-                  onClick={handleDownloadReceipt}
-                  disabled={downloading}
-                  className="p-3 rounded-xl border border-[#0D5C56] bg-[#E8F3F1] hover:bg-[#D4EAE7] text-[#0D5C56] text-left transition-colors font-medium flex items-center justify-between"
+                  onClick={() => setSelectedDoc('receipt')}
+                  className={`py-1.5 px-3 rounded-lg text-xs font-semibold flex items-center justify-center gap-1.5 transition-all ${
+                    selectedDoc === 'receipt'
+                      ? 'bg-white text-[#0D5C56] shadow-2xs'
+                      : 'text-[#5C6E6B] hover:text-[#1A2B28]'
+                  }`}
                 >
-                  <div>
-                    <div className="font-bold text-xs flex items-center gap-1.5">
-                      <Download size={14} />
-                      <span>Receipt PDF</span>
-                    </div>
-                    <div className="text-[10px] text-[#0D5C56]/80 mt-0.5">Instant download</div>
-                  </div>
+                  <FileText size={13} />
+                  <span>Receipt PDF</span>
                 </button>
-
                 <button
                   type="button"
-                  onClick={handleDownloadInvoice}
-                  disabled={downloading}
-                  className="p-3 rounded-xl border border-[#D8D2C5] bg-white hover:bg-[#FAF9F6] text-[#1A2B28] text-left transition-colors font-medium flex items-center justify-between"
+                  onClick={() => setSelectedDoc('invoice')}
+                  className={`py-1.5 px-3 rounded-lg text-xs font-semibold flex items-center justify-center gap-1.5 transition-all ${
+                    selectedDoc === 'invoice'
+                      ? 'bg-white text-[#0D5C56] shadow-2xs'
+                      : 'text-[#5C6E6B] hover:text-[#1A2B28]'
+                  }`}
                 >
-                  <div>
-                    <div className="font-bold text-xs flex items-center gap-1.5">
-                      <FileText size={14} className="text-[#0D5C56]" />
-                      <span>Stay Invoice</span>
-                    </div>
-                    <div className="text-[10px] text-[#5C6E6B] mt-0.5">Complete stay folio</div>
-                  </div>
+                  <Building2 size={13} />
+                  <span>Stay Folio Bill</span>
                 </button>
               </div>
 
-              {/* Quick Share Options */}
-              <div className="flex items-center gap-2 pt-1">
+              {/* Primary PDF Share Action */}
+              <button
+                type="button"
+                onClick={() => handleSharePdfNative(selectedDoc)}
+                disabled={downloading}
+                className="w-full py-2.5 px-4 rounded-xl bg-[#0D5C56] hover:bg-[#094440] text-white font-semibold text-xs flex items-center justify-center gap-2 shadow-2xs transition-colors"
+                title="Share the PDF document file using your device's media picker (WhatsApp, Gmail, AirDrop, Messages)"
+              >
+                <Share2 size={15} />
+                <span>Share PDF File (WhatsApp, Mail, AirDrop)</span>
+              </button>
+
+              {/* Direct Media Channels in PDF Format */}
+              <div className="grid grid-cols-2 gap-2">
                 <button
                   type="button"
-                  onClick={handleWhatsAppShare}
-                  className="flex-1 py-2 px-3 rounded-lg border border-[#D8D2C5] bg-white hover:border-[#25D366] text-xs font-medium text-[#1A2B28] flex items-center justify-center gap-1.5 transition-colors"
+                  onClick={() => handleSharePdfWhatsApp(selectedDoc)}
+                  disabled={downloading}
+                  className="py-2.5 px-3 rounded-xl border border-[#D8D2C5] bg-white hover:border-[#25D366] hover:bg-[#F2FAF5] text-xs font-semibold text-[#1A2B28] flex items-center justify-center gap-2 transition-all group"
+                  title="Save PDF and open WhatsApp to share the bill"
                 >
-                  <MessageCircle size={14} className="text-[#25D366]" />
-                  <span>WhatsApp</span>
+                  <MessageCircle size={15} className="text-[#25D366] group-hover:scale-110 transition-transform" />
+                  <span>WhatsApp PDF</span>
                 </button>
+
                 <button
                   type="button"
-                  onClick={handleEmailShare}
-                  className="flex-1 py-2 px-3 rounded-lg border border-[#D8D2C5] bg-white hover:border-[#0D5C56] text-xs font-medium text-[#1A2B28] flex items-center justify-center gap-1.5 transition-colors"
+                  onClick={() => handleSharePdfEmail(selectedDoc)}
+                  disabled={downloading}
+                  className="py-2.5 px-3 rounded-xl border border-[#D8D2C5] bg-white hover:border-[#0D5C56] hover:bg-[#E8F3F1] text-xs font-semibold text-[#1A2B28] flex items-center justify-center gap-2 transition-all group"
+                  title="Save PDF and prepare email draft"
                 >
-                  <Mail size={14} className="text-[#0D5C56]" />
-                  <span>Email</span>
+                  <Mail size={15} className="text-[#0D5C56] group-hover:scale-110 transition-transform" />
+                  <span>Email PDF</span>
                 </button>
+              </div>
+
+              {/* Direct Download & Preview in New Tab */}
+              <div className="grid grid-cols-2 gap-2">
                 <button
                   type="button"
-                  onClick={handleCopyDetails}
-                  className="py-2 px-3 rounded-lg border border-[#D8D2C5] bg-white hover:bg-stone-50 text-xs font-medium text-[#1A2B28] flex items-center justify-center gap-1.5 transition-colors"
-                  title="Copy receipt details for Instagram or SMS"
+                  onClick={() => handleDownloadPdf(selectedDoc)}
+                  disabled={downloading}
+                  className="py-2 px-3 rounded-xl border border-[#D8D2C5] bg-[#FAF9F6] hover:bg-white text-xs font-medium text-[#5C6E6B] hover:text-[#1A2B28] flex items-center justify-center gap-1.5 transition-colors"
                 >
-                  {copied ? <Check size={14} className="text-[#276749]" /> : <Copy size={14} />}
-                  <span>{copied ? 'Copied' : 'Copy'}</span>
+                  <Download size={13} />
+                  <span>Download .PDF</span>
                 </button>
+
+                <button
+                  type="button"
+                  onClick={() => handlePreviewPdf(selectedDoc)}
+                  disabled={downloading}
+                  className="py-2 px-3 rounded-xl border border-[#D8D2C5] bg-[#FAF9F6] hover:bg-white text-xs font-medium text-[#5C6E6B] hover:text-[#1A2B28] flex items-center justify-center gap-1.5 transition-colors"
+                >
+                  <Eye size={13} />
+                  <span>Preview PDF</span>
+                </button>
+              </div>
+
+              <div className="text-[11px] text-[#5C6E6B] text-center pt-0.5">
+                The {selectedDoc === 'receipt' ? 'payment receipt' : 'stay invoice bill'} is shared as an official <span className="font-semibold text-[#0D5C56]">.pdf file</span>.
               </div>
             </div>
 

@@ -28,19 +28,19 @@ function getInitialData(): DemoDB {
   const properties: Property[] = [
     {
       id: 'p1',
-      name: 'The Heritage Courtyard',
-      property_type: 'Boutique Hotel',
+      name: 'The Rojal Homestay',
+      property_type: 'Homestay',
       location: 'City Center',
       address: '12 Temple Road',
       city: 'Mysuru',
       state: 'Karnataka',
       pincode: '570001',
       phone: '+91 821 245 6789',
-      email: 'stay@heritagecourtyard.in',
+      email: 'stay@therojalhomestay.in',
       gstin: '29ABCDE1234F1Z5',
       check_in_time: '14:00',
       check_out_time: '11:00',
-      description: 'Restored 19th-century royal courtyard with 16 bespoke heritage suites.',
+      description: 'Charming royal homestay with 16 bespoke suites and courtyard gardens.',
       total_rooms: 16,
       active: true,
       created_at: nowIso
@@ -235,7 +235,7 @@ function getInitialData(): DemoDB {
 
   // Bookings with realistic stay timelines and financial consistency
   const bookings: Booking[] = [
-    // Today's Arrival 1 (The Heritage Courtyard) - Partial Advance Paid
+    // Today's Arrival 1 (The Rojal Homestay) - Partial Advance Paid
     {
       id: 'b-arr-1',
       booking_no: 'BK-1011',
@@ -257,7 +257,7 @@ function getInitialData(): DemoDB {
       payment_status: 'Partially Paid',
       created_at: getDateOffset(-5)
     },
-    // Today's Arrival 2 (The Heritage Courtyard) - Fully Paid
+    // Today's Arrival 2 (The Rojal Homestay) - Fully Paid
     {
       id: 'b-arr-2',
       booking_no: 'BK-1012',
@@ -808,6 +808,18 @@ class DemoRepositoryImpl implements IRepository {
       if (stored) {
         const parsed = JSON.parse(stored);
         if (parsed && parsed.version === 3 && Array.isArray(parsed.properties) && Array.isArray(parsed.bookings)) {
+          // Ensure The Rojal Homestay is reflected in existing saved workspace
+          let hasChange = false;
+          parsed.properties = parsed.properties.map((p: Property) => {
+            if (p.id === 'p1' || p.name === 'The Heritage Courtyard') {
+              hasChange = true;
+              return { ...p, name: 'The Rojal Homestay' };
+            }
+            return p;
+          });
+          if (hasChange) {
+            localStorage.setItem(STORAGE_KEY, JSON.stringify(parsed));
+          }
           return parsed;
         }
       }

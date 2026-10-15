@@ -11,12 +11,19 @@ import {
   Smartphone,
   ExternalLink,
   ShieldCheck,
-  AlertCircle
+  AlertCircle,
+  Eye
 } from 'lucide-react';
 import { Booking, Payment, BusinessSettings } from '../../lib/repository/types';
 import { fmtINR, fmtDate } from '../../lib/utils/formatters';
 import { generatePaymentReceiptPDF, generateBookingInvoicePDF } from '../../lib/services/pdfGenerator';
 import { useToast } from '../../context/ToastContext';
+import {
+  sharePdfNative,
+  sharePdfViaWhatsApp,
+  sharePdfViaEmail,
+  openPdfPreview
+} from '../../lib/services/pdfShare';
 
 interface DocumentModalProps {
   isOpen: boolean;
@@ -77,32 +84,35 @@ export default function DocumentModal({
 
   const currentAmount = type === 'receipt' ? payment?.amount || 0 : booking.grand_total;
 
+  async function generateCurrentDoc() {
+    if (type === 'receipt' && payment) {
+      return await generatePaymentReceiptPDF(
+        booking,
+        payment,
+        booking.property,
+        booking.customer,
+        settings,
+        previouslyPaid,
+        balanceDue
+      );
+    } else {
+      return await generateBookingInvoicePDF(
+        booking,
+        [],
+        booking.property,
+        booking.customer,
+        settings,
+        booking.grand_total - balanceDue,
+        balanceDue
+      );
+    }
+  }
+
   async function handleDownloadPDF() {
     setDownloading(true);
     try {
-      if (type === 'receipt' && payment) {
-        const doc = await generatePaymentReceiptPDF(
-          booking,
-          payment,
-          booking.property,
-          booking.customer,
-          settings,
-          previouslyPaid,
-          balanceDue
-        );
-        doc.save(`${docNumber}.pdf`);
-      } else {
-        const doc = await generateBookingInvoicePDF(
-          booking,
-          [],
-          booking.property,
-          booking.customer,
-          settings,
-          booking.grand_total - balanceDue,
-          balanceDue
-        );
-        doc.save(`${docNumber}.pdf`);
-      }
+      const doc = await generateCurrentDoc();
+      doc.save(`${docNumber}.pdf`);
       toast.success('PDF Downloaded', `${docNumber}.pdf saved to your device.`);
     } catch (err) {
       console.error(err);
@@ -112,61 +122,91 @@ export default function DocumentModal({
     }
   }
 
-  function handleWhatsAppShare() {
-    const cleanPhone = guestPhone.replace(/[^0-9]/g, '');
-    const message = `Namaste ${guestName}! Here are the details of your ${docTitle} (${docNumber}) from ${propertyName}.\n\n` +
-      `Booking Reference: ${booking.booking_no}\n` +
-      `Stay Dates: ${fmtDate(booking.check_in)} to ${fmtDate(booking.check_out)}\n` +
-      `Amount: ${fmtINR(currentAmount)}\n` +
-      `Remaining Due: ${fmtINR(balanceDue)}\n\n` +
-      `Thank you for staying with us!`;
-
-    const url = cleanPhone
-      ? `https://wa.me/${cleanPhone}?text=${encodeURIComponent(message)}`
-      : `https://wa.me/?text=${encodeURIComponent(message)}`;
-
-    window.open(url, '_blank', 'noopener,noreferrer');
-    toast.success(
-      'WhatsApp Prepared',
-      cleanPhone
-        ? `Draft message prepared for ${guestName}.`
-        : 'WhatsApp chat opened with prefilled text.'
-    );
+  async function handleWhatsAppShare() {
+    setDownloading(true);
+    try {
+      const doc = await generateCurrentDoc();
+      const res = await sharePdfViaWhatsApp({
+        doc,
+        fileName: `${docNumber}.pdf`,
+        title: docTitle,
+        guestName,
+        guestPhone,
+        propertyName,
+        bookingNo: booking.booking_no,
+        amount: currentAmount,
+        balanceDue
+      });
+      toast.success('PDF Bill Ready', res.message);
+    } catch (err) {
+      console.error(err);
+      toast.error('WhatsApp Prep Failed', 'Could not prepare PDF for WhatsApp.');
+    } finally {
+      setDownloading(false);
+    }
   }
 
-  function handleEmailShare() {
-    const subject = `${docTitle} - ${booking.booking_no} (${propertyName})`;
-    const body = `Dear ${guestName},\n\n` +
-      `Please find attached the operational details for your stay with ${propertyName}.\n\n` +
-      `Document: ${docTitle} (${docNumber})\n` +
-      `Booking Number: ${booking.booking_no}\n` +
-      `Dates: ${fmtDate(booking.check_in)} to ${fmtDate(booking.check_out)}\n` +
-      `Amount Recorded: ${fmtINR(currentAmount)}\n` +
-      `Outstanding Balance: ${fmtINR(balanceDue)}\n\n` +
-      `Warm regards,\n${propertyName} Front Desk`;
-
-    const mailtoUrl = `mailto:${encodeURIComponent(guestEmail)}?subject=${encodeURIComponent(subject)}&body=${encodeURIComponent(body)}`;
-    window.location.href = mailtoUrl;
-    toast.success('Email Client Opened', 'Pre-formatted message loaded in your email app.');
+  async function handleEmailShare() {
+    setDownloading(true);
+    try {
+      const doc = await generateCurrentDoc();
+      const res = await sharePdfViaEmail({
+        doc,
+        fileName: `${docNumber}.pdf`,
+        title: docTitle,
+        guestName,
+        guestEmail,
+        propertyName,
+        bookingNo: booking.booking_no,
+        amount: currentAmount,
+        balanceDue
+      });
+      toast.success('Email Draft Opened', res.message);
+    } catch (err) {
+      console.error(err);
+      toast.error('Email Prep Failed', 'Could not prepare PDF for email.');
+    } finally {
+      setDownloading(false);
+    }
   }
 
   async function handleNativeShare() {
-    const shareData = {
-      title: `${docTitle} - ${booking.booking_no}`,
-      text: `${docTitle} for ${guestName} at ${propertyName}. Ref: ${booking.booking_no}, Amount: ${fmtINR(currentAmount)}`
-    };
-
-    if (navigator.share) {
-      try {
-        await navigator.share(shareData);
-        toast.success('Share Sheet Opened', 'Document details shared via system dialog.');
-      } catch (err: any) {
-        if (err.name !== 'AbortError') {
-          handleDownloadPDF();
-        }
+    setDownloading(true);
+    try {
+      const doc = await generateCurrentDoc();
+      const res = await sharePdfNative({
+        doc,
+        fileName: `${docNumber}.pdf`,
+        title: docTitle,
+        guestName,
+        guestPhone,
+        guestEmail,
+        propertyName,
+        bookingNo: booking.booking_no,
+        amount: currentAmount,
+        balanceDue
+      });
+      if (res.success) {
+        toast.success(res.method === 'native' ? 'Shared via System' : 'PDF Saved', res.message);
       }
-    } else {
-      handleDownloadPDF();
+    } catch (err: any) {
+      console.error(err);
+      toast.error('Share Failed', err.message || 'Could not share PDF document.');
+    } finally {
+      setDownloading(false);
+    }
+  }
+
+  async function handlePreviewTab() {
+    setDownloading(true);
+    try {
+      const doc = await generateCurrentDoc();
+      openPdfPreview(doc);
+    } catch (err) {
+      console.error(err);
+      toast.error('Preview Failed', 'Could not open PDF in browser.');
+    } finally {
+      setDownloading(false);
     }
   }
 
@@ -349,87 +389,103 @@ export default function DocumentModal({
             </div>
           ) : (
             <div className="space-y-4">
-              <p className="text-[#5C6E6B]">
-                Share this verified stay document directly with the customer. Note: Web browsers do not allow automatic background attachment of private PDF files; clicking an action opens the prepared draft and you can attach your downloaded document.
-              </p>
+              <div className="p-3 rounded-xl bg-[#E8F3F1] border border-[#BDDFC9] text-xs flex items-center justify-between">
+                <div className="flex items-center gap-2">
+                  <ShieldCheck size={16} className="text-[#0D5C56]" />
+                  <span className="text-[#1A2B28] font-medium">
+                    Verified stay folio prepared in official <strong className="text-[#0D5C56]">.PDF format</strong>.
+                  </span>
+                </div>
+                <button
+                  type="button"
+                  onClick={handlePreviewTab}
+                  disabled={downloading}
+                  className="text-xs text-[#0D5C56] font-semibold underline hover:text-[#094440] flex items-center gap-1 cursor-pointer"
+                >
+                  <Eye size={12} />
+                  <span>Preview PDF</span>
+                </button>
+              </div>
 
               {/* Action Buttons Grid */}
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                {/* WhatsApp */}
+                {/* Native Device File Share */}
+                <button
+                  onClick={handleNativeShare}
+                  disabled={downloading}
+                  className="p-3.5 rounded-xl border border-[#0D5C56] bg-[#FAFDFB] hover:bg-[#E8F3F1] text-left transition-all flex items-start gap-3 group shadow-2xs cursor-pointer"
+                >
+                  <div className="w-8 h-8 rounded-lg bg-[#0D5C56] text-white flex items-center justify-center shrink-0 group-hover:scale-105 transition-transform">
+                    <Share2 size={16} />
+                  </div>
+                  <div>
+                    <h4 className="font-bold text-[#1A2B28] text-xs">Share PDF File</h4>
+                    <p className="text-[11px] text-[#5C6E6B] mt-0.5">
+                      Send actual .pdf to WhatsApp, Gmail, AirDrop, Messages
+                    </p>
+                  </div>
+                </button>
+
+                {/* WhatsApp PDF */}
                 <button
                   onClick={handleWhatsAppShare}
-                  className="p-3.5 rounded-xl border border-[#D8D2C5] bg-white hover:border-[#25D366] hover:bg-[#F2FAF5] text-left transition-all flex items-start gap-3 group"
+                  disabled={downloading}
+                  className="p-3.5 rounded-xl border border-[#D8D2C5] bg-white hover:border-[#25D366] hover:bg-[#F2FAF5] text-left transition-all flex items-start gap-3 group cursor-pointer"
                 >
                   <div className="w-8 h-8 rounded-lg bg-[#25D366]/10 text-[#25D366] flex items-center justify-center shrink-0 group-hover:scale-105 transition-transform">
                     <MessageCircle size={18} />
                   </div>
                   <div>
-                    <h4 className="font-bold text-[#1A2B28] text-xs">WhatsApp</h4>
+                    <h4 className="font-bold text-[#1A2B28] text-xs">WhatsApp (PDF Bill)</h4>
                     <p className="text-[11px] text-[#5C6E6B] mt-0.5">
-                      {guestPhone ? `Open chat with ${guestPhone}` : 'Open chat (enter number)'}
+                      {guestPhone ? `Downloads PDF & opens chat with ${guestPhone}` : 'Downloads PDF & opens WhatsApp'}
                     </p>
                   </div>
                 </button>
 
-                {/* Email */}
+                {/* Email PDF */}
                 <button
                   onClick={handleEmailShare}
-                  className="p-3.5 rounded-xl border border-[#D8D2C5] bg-white hover:border-[#0D5C56] hover:bg-[#E8F3F1] text-left transition-all flex items-start gap-3 group"
+                  disabled={downloading}
+                  className="p-3.5 rounded-xl border border-[#D8D2C5] bg-white hover:border-[#0D5C56] hover:bg-[#E8F3F1] text-left transition-all flex items-start gap-3 group cursor-pointer"
                 >
                   <div className="w-8 h-8 rounded-lg bg-[#0D5C56]/10 text-[#0D5C56] flex items-center justify-center shrink-0 group-hover:scale-105 transition-transform">
                     <Mail size={18} />
                   </div>
                   <div>
-                    <h4 className="font-bold text-[#1A2B28] text-xs">Email Draft</h4>
+                    <h4 className="font-bold text-[#1A2B28] text-xs">Email Draft (PDF Bill)</h4>
                     <p className="text-[11px] text-[#5C6E6B] mt-0.5">
-                      {guestEmail ? `Draft to ${guestEmail}` : 'Open pre-filled email'}
+                      {guestEmail ? `Downloads PDF & prepares draft to ${guestEmail}` : 'Downloads PDF & opens email draft'}
                     </p>
                   </div>
                 </button>
 
-                {/* Native Device Share */}
+                {/* Direct PDF Download */}
                 <button
-                  onClick={handleNativeShare}
-                  className="p-3.5 rounded-xl border border-[#D8D2C5] bg-white hover:border-[#164E63] hover:bg-[#EAF3F6] text-left transition-all flex items-start gap-3 group"
-                >
-                  <div className="w-8 h-8 rounded-lg bg-[#164E63]/10 text-[#164E63] flex items-center justify-center shrink-0 group-hover:scale-105 transition-transform">
-                    <Smartphone size={18} />
-                  </div>
-                  <div>
-                    <h4 className="font-bold text-[#1A2B28] text-xs">Device Share Sheet</h4>
-                    <p className="text-[11px] text-[#5C6E6B] mt-0.5">
-                      Mobile system share (AirDrop, Nearby, Apps)
-                    </p>
-                  </div>
-                </button>
-
-                {/* Copy Text Summary */}
-                <button
-                  onClick={handleCopySummary}
-                  className="p-3.5 rounded-xl border border-[#D8D2C5] bg-white hover:border-stone-400 hover:bg-[#FAF9F6] text-left transition-all flex items-start gap-3 group"
+                  onClick={handleDownloadPDF}
+                  disabled={downloading}
+                  className="p-3.5 rounded-xl border border-[#D8D2C5] bg-white hover:border-stone-400 hover:bg-[#FAF9F6] text-left transition-all flex items-start gap-3 group cursor-pointer"
                 >
                   <div className="w-8 h-8 rounded-lg bg-stone-100 text-stone-700 flex items-center justify-center shrink-0 group-hover:scale-105 transition-transform">
-                    {copied ? <Check size={18} className="text-[#276749]" /> : <Copy size={18} />}
+                    <Download size={18} />
                   </div>
                   <div>
-                    <h4 className="font-bold text-[#1A2B28] text-xs">
-                      {copied ? 'Copied!' : 'Copy Summary'}
-                    </h4>
+                    <h4 className="font-bold text-[#1A2B28] text-xs">Download PDF Document</h4>
                     <p className="text-[11px] text-[#5C6E6B] mt-0.5">
-                      For Instagram, Facebook, or SMS
+                      Save {docNumber}.pdf directly to your device
                     </p>
                   </div>
                 </button>
               </div>
 
-              {/* Instagram & Facebook Guidance */}
-              <div className="p-3 rounded-xl bg-amber-50/70 border border-amber-200 text-[#1A2B28] space-y-1">
-                <span className="font-semibold text-amber-900 flex items-center gap-1.5">
-                  <AlertCircle size={14} className="text-amber-700 shrink-0" />
-                  Instagram & Facebook Direct Messaging
+              {/* PDF Document Notice */}
+              <div className="p-3 rounded-xl bg-[#FAF9F6] border border-[#EAE5DC] text-[#1A2B28] space-y-1">
+                <span className="font-semibold text-xs text-[#0D5C56] flex items-center gap-1.5">
+                  <FileText size={14} className="text-[#0D5C56] shrink-0" />
+                  PDF Format Guarantee
                 </span>
                 <p className="text-[11px] text-[#5C6E6B] leading-relaxed">
-                  Instagram and Facebook do not support direct web-share attachments for private document PDFs. To share via DM: download the PDF using the button below, then attach it or paste the copied summary into your chat.
+                  All channels share this stay document as an official PDF format file ({docNumber}.pdf), including property details, GSTIN, guest records, and financial breakdown.
                 </p>
               </div>
             </div>
